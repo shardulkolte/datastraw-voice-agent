@@ -8,7 +8,9 @@ from backend.app.database import Base, SessionLocal, engine, get_db
 from backend.app.models import OrderRecord, OrderResponse
 from backend.app.services.order_seed import seed_orders
 from backend.app.tools.orders import get_order_details
-
+from fastapi import HTTPException
+from backend.app.schemas import ChatRequest, ChatResponse
+from backend.app.services.gemini_agent import ask_gemini
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -61,3 +63,26 @@ def get_order(
         )
 
     return order
+
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(request: ChatRequest):
+    try:
+        reply = ask_gemini(request.message)
+        return ChatResponse(reply=reply)
+
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        # Keep detailed provider errors in server logs,
+        # rather than exposing them to the customer.
+        print(f"Gemini request failed: {exc}")
+
+        raise HTTPException(
+            status_code=502,
+            detail="The AI service is temporarily unavailable.",
+        ) from exc
