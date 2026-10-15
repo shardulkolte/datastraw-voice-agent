@@ -17,10 +17,7 @@ def normalize_order_id(raw: str) -> str:
 
 def extract_order_id(message: str) -> Optional[str]:
     patterns = [
-        # Standard IDs: ORD-101, WORK-400
         r"\b([A-Z]{2,12})\s*-\s*(\d{2,})\b",
-
-        # Spoken/written IDs: ORD 101, ORD101
         r"\b(ORD)\s*-?\s*(\d{2,})\b",
     ]
 
@@ -119,6 +116,37 @@ def shipping_reply(amount: int) -> str:
     )
 
 
+
+def general_shipping_reply() -> str:
+    return (
+        "Aura Skincare offers free shipping on orders above "
+        "499 rupees. Orders below 499 rupees have a shipping fee "
+        "of 50 rupees. The policy does not specify the fee for an "
+        "order worth exactly 499 rupees, so please contact customer "
+        "support to confirm."
+    )
+
+
+def cod_reply(amount: Optional[int] = None) -> str:
+    if amount is not None:
+        if amount <= 2500:
+            return (
+                f"For an order worth {amount} rupees, Cash on Delivery "
+                "is within Aura Skincare's limit of 2,500 rupees. "
+                "Payment can be made in cash or through UPI."
+            )
+
+        return (
+            f"An order worth {amount} rupees exceeds Aura Skincare's "
+            "Cash on Delivery limit of 2,500 rupees."
+        )
+
+    return (
+        "Yes, Aura Skincare offers Cash on Delivery for orders "
+        "up to 2,500 rupees. You can pay in cash or through UPI."
+    )
+
+
 def route_local(message: str) -> Optional[str]:
     text = message.strip()
 
@@ -140,21 +168,33 @@ def route_local(message: str) -> Optional[str]:
         re.IGNORECASE,
     )
 
-    order_lookup_intent = re.search(
-        r"\b(order|tracking|track|parcel)\b",
+    cod_intent = re.search(
+        r"\b(COD|cash\s+on\s+delivery|cash\s+delivery)\b",
         text,
         re.IGNORECASE,
-    ) and re.search(
-        r"\b(tell me|about|details|status|track|tracking|"
-        r"where|check|find|look up|information|update|my)\b",
-        text,
-        re.IGNORECASE,
+    )
+
+    order_lookup_intent = (
+        re.search(
+            r"\b(order|tracking|track|parcel)\b",
+            text,
+            re.IGNORECASE,
+        )
+        and re.search(
+            r"\b(tell me|about|details|status|track|tracking|"
+            r"where|check|find|look up|information|update|my)\b",
+            text,
+            re.IGNORECASE,
+        )
     )
 
     # 1. Cancellation always uses verified order data.
     if cancellation_intent:
         if not order_id:
-            return "I can check cancellation eligibility. What is your order ID?"
+            return (
+                "I can check cancellation eligibility. "
+                "What is your order ID?"
+            )
 
         order = get_order(order_id)
 
@@ -177,7 +217,7 @@ def route_local(message: str) -> Optional[str]:
             return (
                 f"Order {order['order_id']} is currently "
                 f"{order['status']}, so it cannot be cancelled now. "
-                "You may refuse delivery at your doorstep."
+                "You may refuse the delivery at your doorstep."
             )
 
         return (
@@ -213,19 +253,21 @@ def route_local(message: str) -> Optional[str]:
         return format_order_details(order)
 
     # 4. Shipping questions about an explicitly stated amount.
-    # Never treat the number in an order ID as the order's value.
+    # Never treat the number in an order ID as a monetary amount.
     if shipping_intent:
         amount = extract_amount(text)
 
         if amount is not None:
             return shipping_reply(amount)
 
-        return (
-            "I can help calculate the shipping fee. "
-            "What is the order value in rupees, or what is your order ID?"
-        )
+        return general_shipping_reply()
 
-    # 5. An explicit order ID with an order-related question
+    # 5. Cash on Delivery policy questions.
+    if cod_intent:
+        amount = extract_amount(text)
+        return cod_reply(amount)
+
+    # 6. An explicit order ID with an order-related question
     # must not be sent to an LLM that cannot access the database.
     if order_id and re.search(
         r"\b(order|tracking|track|parcel|delivery|status)\b",

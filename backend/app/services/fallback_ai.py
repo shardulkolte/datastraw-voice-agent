@@ -331,8 +331,12 @@ def _execute_tool(tool_call: dict) -> dict:
         }
 
 
-def ask_openrouter(message: str) -> str:
-    """Generate a reply with OpenRouter and execute requested backend tools."""
+def ask_openrouter(
+    message: str,
+    history: list[dict] | None = None,
+    language: str = "english",
+) -> str:
+    """Generate a reply using conversation history and approved backend tools."""
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -340,10 +344,52 @@ def ask_openrouter(message: str) -> str:
 
     model = os.getenv("OPENROUTER_MODEL", "openrouter/free")
 
+    language_instruction = (
+        "Reply in clear, natural English suitable for an Indian customer."
+        if language == "english"
+        else (
+            "Reply in natural conversational Hinglish using readable "
+            "Roman Hindi mixed with English. Keep order IDs, product names, "
+            "courier names, and tracking codes unchanged."
+        )
+    )
+
+    system_prompt = (
+        SYSTEM_PROMPT
+        + "\n\nRESPONSE LANGUAGE:\n"
+        + language_instruction
+        + "\nUse previous conversation turns to answer follow-up questions. "
+        "Do not invent details that are absent from the conversation or tools. "
+        "For order-specific questions, use the relevant backend tool. "
+        "Never claim an order was cancelled, refunded, returned, or replaced "
+        "unless a backend tool confirms that action."
+    )
+
+    # Build the conversation in chronological order. The current message is
+    # appended separately so it is not duplicated in history.
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": message},
+        {"role": "system", "content": system_prompt},
     ]
+
+    for turn in (history or [])[-40:]:
+        if not isinstance(turn, dict):
+            continue
+
+        role = turn.get("role")
+        content = turn.get("content", "")
+
+        if not isinstance(content, str):
+            continue
+
+        content = content.strip()
+
+        if role in ("user", "assistant") and content:
+            messages.append({
+                "role": role,
+                "content": content,
+            })
+
+    messages.append({"role": "user", "content": message})
 
     # Allow the model to request tools and then respond using their results.
     max_tool_rounds = 4
@@ -374,21 +420,32 @@ def ask_openrouter(message: str) -> str:
             if isinstance(content, str) and content.strip():
                 return content.strip()
 
+            # Some compatible providers return content as text parts.
+            if isinstance(content, list):
+                text_parts = [
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, dict)
+                    and isinstance(part.get("text"), str)
+                ]
+                combined_content = "".join(text_parts).strip()
+                if combined_content:
+                    return combined_content
+
             raise RuntimeError(
                 "OpenRouter returned an empty response. "
                 "The selected model may not support the requested response."
             )
 
         # Preserve the assistant's tool-call request in the conversation.
-        messages.append(
-            {
-                "role": "assistant",
-                "content": assistant_message.get("content"),
-                "tool_calls": tool_calls,
-            }
-        )
+        messages.append({
+            "role": "assistant",
+            "content": assistant_message.get("content"),
+            "tool_calls": tool_calls,
+        })
 
-        # Execute each requested function on our own backend.
+        # Execute only approved backend functions and return their results
+        # to the model so it can formulate a grounded final answer.
         for tool_call in tool_calls:
             tool_call_id = tool_call.get("id")
 
@@ -399,17 +456,15 @@ def ask_openrouter(message: str) -> str:
 
             tool_result = _execute_tool(tool_call)
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": json.dumps(
-                        tool_result,
-                        ensure_ascii=False,
-                        default=str,
-                    ),
-                }
-            )
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": json.dumps(
+                    tool_result,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            })
 
     raise RuntimeError(
         "OpenRouter exceeded the maximum number of tool-call rounds."

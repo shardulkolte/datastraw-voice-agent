@@ -1,3 +1,4 @@
+
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -20,22 +21,10 @@ LANGUAGE_INSTRUCTIONS = {
     ),
     "hinglish": (
         "Reply in natural conversational Hinglish, mixing Hindi and English "
-        "the way an Indian customer-support agent would speak. Use readable "
-        "Roman Hindi mixed with English. Keep product names, order IDs, courier "
+        "using readable Roman Hindi. Keep product names, order IDs, courier "
         "names, and tracking codes unchanged."
     ),
 }
-
-
-def message_for_language(message: str, language: str) -> str:
-    """Keep the customer's original message intact and guide the reply language."""
-    instruction = LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["english"])
-    return (
-        f"{message}\n\n"
-        f"[Aria response-language preference: {instruction} "
-        "This instruction controls the language of your response; it does not "
-        "change the customer's request or Aura Skincare policies.]"
-    )
 
 
 @asynccontextmanager
@@ -98,10 +87,21 @@ def get_order(order_id: str, db: Session = Depends(get_db)):
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
-    ai_message = message_for_language(request.message, request.language)
+    history = [
+        turn.model_dump()
+        for turn in request.history
+    ]
+
+    # Keep the customer's latest message unchanged.
+    # The selected language is passed separately to each provider.
+    language = request.language
 
     try:
-        reply = ask_gemini(ai_message)
+        reply = ask_gemini(
+            request.message,
+            history=history,
+            language=language,
+        )
         return ChatResponse(reply=reply)
 
     except Exception as gemini_error:
@@ -109,7 +109,11 @@ def chat(request: ChatRequest):
         print("Trying OpenRouter backup...")
 
         try:
-            reply = ask_openrouter(ai_message)
+            reply = ask_openrouter(
+                request.message,
+                history=history,
+                language=language,
+            )
             print("OpenRouter backup succeeded.")
             return ChatResponse(reply=reply)
 

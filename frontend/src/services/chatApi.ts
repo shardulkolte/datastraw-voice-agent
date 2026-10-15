@@ -1,6 +1,11 @@
 import type { ChatResponse } from "../types/voice";
 import type { ConversationLanguage } from "../hooks/useVoiceAgent";
 
+export type ConversationTurn = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 const API_URL = (
   import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
 ).replace(/\/$/, "");
@@ -8,6 +13,7 @@ const API_URL = (
 export async function sendChatMessage(
   message: string,
   language: ConversationLanguage = "english",
+  history: ConversationTurn[] = [],
 ): Promise<ChatResponse> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 30_000);
@@ -16,14 +22,20 @@ export async function sendChatMessage(
     const response = await fetch(`${API_URL}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, language }),
+      body: JSON.stringify({
+        message,
+        language,
+        history: history.slice(-40),
+      }),
       signal: controller.signal,
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(data?.detail || `Support service returned ${response.status}.`);
+      throw new Error(
+        data?.detail || `Support service returned ${response.status}.`,
+      );
     }
 
     if (typeof data?.reply !== "string") {
@@ -35,6 +47,7 @@ export async function sendChatMessage(
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("The response took too long. Please try again.");
     }
+
     throw error;
   } finally {
     window.clearTimeout(timeout);

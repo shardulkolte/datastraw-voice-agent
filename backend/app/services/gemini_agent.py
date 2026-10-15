@@ -188,8 +188,16 @@ def handle_direct_order_lookup(message: str) -> str | None:
     )
 
 
-def ask_gemini(message: str) -> str:
-    """Handle local workflows first, then use Gemini with fast failure."""
+
+def ask_gemini(
+    message: str,
+    history: list[dict] | None = None,
+    language: str = "english",
+) -> str:
+    """Handle local workflows, conversation history, and Gemini responses."""
+
+    # Preserve the existing local order and policy handling.
+    # Route only the latest message to avoid interference from old messages.
     local_reply = route_local(message)
 
     if local_reply is not None:
@@ -202,12 +210,49 @@ def ask_gemini(message: str) -> str:
             "GEMINI_API_KEY is missing. Add it to your .env file."
         )
 
+    language_instruction = (
+        "Reply in clear, natural English suitable for an Indian customer."
+        if language == "english"
+        else (
+            "Reply in natural conversational Hinglish using readable "
+            "Roman Hindi mixed with English. Keep product names, order IDs, "
+            "courier names, and tracking codes unchanged."
+        )
+    )
+
+    system_instruction = (
+        SYSTEM_INSTRUCTION
+        + "\n\nRESPONSE LANGUAGE:\n"
+        + language_instruction
+        + "\nUse previous conversation turns to understand follow-up questions. "
+        "Do not invent details or claim to remember information absent "
+        "from the conversation or verified backend results."
+    )
+
+    # Convert frontend conversation history to Gemini's content format.
+    gemini_history = []
+
+    for turn in (history or [])[-40:]:
+        content = turn.get("content", "").strip()
+        role = turn.get("role")
+
+        if not content or role not in ("user", "assistant"):
+            continue
+
+        gemini_history.append(
+            types.Content(
+                role="user" if role == "user" else "model",
+                parts=[types.Part(text=content)],
+            )
+        )
+
     client = genai.Client(api_key=api_key)
 
     chat = client.chats.create(
         model=MODEL_NAME,
+        history=gemini_history,
         config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
+            system_instruction=system_instruction,
             temperature=0.3,
             tools=[
                 get_order_details,
@@ -220,9 +265,7 @@ def ask_gemini(message: str) -> str:
         ),
     )
 
-    # At most two attempts for temporary server/network failures.
-    # Quota/rate-limit errors immediately propagate to main.py,
-    # which should invoke the existing OpenRouter fallback.
+    # Preserve the previous retry and fallback behavior.
     for attempt in range(2):
         try:
             response = chat.send_message(message)
@@ -247,11 +290,7 @@ def ask_gemini(message: str) -> str:
                 "429",
             )
 
-            is_quota_error = any(
-                marker in error_text for marker in quota_markers
-            )
-
-            if is_quota_error:
+            if any(marker in error_text for marker in quota_markers):
                 logger.warning(
                     "Gemini quota/rate limit reached. "
                     "Switching to the configured fallback."
@@ -273,7 +312,6 @@ def ask_gemini(message: str) -> str:
                 marker in error_text for marker in temporary_markers
             )
 
-            # Retry only once for recognized temporary failures.
             if is_temporary and attempt == 0:
                 logger.warning(
                     "Temporary Gemini failure. Retrying once in 1 second."

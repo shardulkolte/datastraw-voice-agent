@@ -63,9 +63,10 @@ function chooseVoice(
   const target = targetLocale.toLowerCase();
   const languageCode = target.split("-")[0];
   const exact = voices.filter((voice) => voice.lang.toLowerCase() === target);
-  const sameLanguage = voices.filter((voice) =>
-    voice.lang.toLowerCase().startsWith(`${languageCode}-`) ||
-    voice.lang.toLowerCase() === languageCode,
+  const sameLanguage = voices.filter(
+    (voice) =>
+      voice.lang.toLowerCase().startsWith(`${languageCode}-`) ||
+      voice.lang.toLowerCase() === languageCode,
   );
   const femaleExact = exact.find(isLikelyFemaleVoice);
   if (femaleExact) return femaleExact;
@@ -76,12 +77,15 @@ function chooseVoice(
   // Prefer a likely female voice even if the browser has no identifiable female
   // Hindi voice. Gender is not exposed consistently by the Web Speech API.
   const femaleIndianEnglish = voices.find(
-    (voice) => voice.lang.toLowerCase() === "en-in" && isLikelyFemaleVoice(voice),
+    (voice) =>
+      voice.lang.toLowerCase() === "en-in" && isLikelyFemaleVoice(voice),
   );
   if (femaleIndianEnglish) return femaleIndianEnglish;
 
-  return exact[0] ?? sameLanguage[0] ?? voices.find(
-    (voice) => voice.lang.toLowerCase() === "en-in",
+  return (
+    exact[0] ??
+    sameLanguage[0] ??
+    voices.find((voice) => voice.lang.toLowerCase() === "en-in")
   );
 }
 
@@ -181,7 +185,11 @@ export function useVoiceAgent({
   );
 
   const restartRecognition = useCallback(() => {
-    if (!activeRef.current || recognitionStartingRef.current || !recognitionRef.current) {
+    if (
+      !activeRef.current ||
+      recognitionStartingRef.current ||
+      !recognitionRef.current
+    ) {
       return;
     }
     try {
@@ -204,7 +212,9 @@ export function useVoiceAgent({
         busyRef.current = false;
         if (activeRef.current) {
           lastActivityAtRef.current = Date.now();
-          setError("Voice playback is unavailable. You can continue by speaking.");
+          setError(
+            "Voice playback is unavailable. You can continue by speaking.",
+          );
           setStatus("Listening");
           restartRecognition();
           scheduleInactivityTimeout(sessionId);
@@ -227,14 +237,22 @@ export function useVoiceAgent({
       if (voice) utterance.voice = voice;
 
       utterance.onstart = () => {
-        if (sessionId !== sessionIdRef.current || speechToken !== speechTokenRef.current) return;
+        if (
+          sessionId !== sessionIdRef.current ||
+          speechToken !== speechTokenRef.current
+        )
+          return;
         speakingRef.current = true;
         setStatus("Speaking");
         restartRecognition();
       };
 
       utterance.onend = () => {
-        if (sessionId !== sessionIdRef.current || speechToken !== speechTokenRef.current) return;
+        if (
+          sessionId !== sessionIdRef.current ||
+          speechToken !== speechTokenRef.current
+        )
+          return;
         speakingRef.current = false;
         busyRef.current = false;
         if (activeRef.current) {
@@ -248,13 +266,19 @@ export function useVoiceAgent({
       };
 
       utterance.onerror = (event) => {
-        if (sessionId !== sessionIdRef.current || speechToken !== speechTokenRef.current) return;
+        if (
+          sessionId !== sessionIdRef.current ||
+          speechToken !== speechTokenRef.current
+        )
+          return;
         if (event.error === "canceled" || event.error === "interrupted") return;
         speakingRef.current = false;
         busyRef.current = false;
         if (activeRef.current) {
           lastActivityAtRef.current = Date.now();
-          setError("I couldn't play the voice response. You can continue by speaking.");
+          setError(
+            "I couldn't play the voice response. You can continue by speaking.",
+          );
           setStatus("Listening");
           restartRecognition();
           scheduleInactivityTimeout(sessionId);
@@ -265,7 +289,13 @@ export function useVoiceAgent({
 
       window.speechSynthesis.speak(utterance);
     },
-    [language, restartRecognition, scheduleInactivityTimeout, stopSpeech, voicePreference],
+    [
+      language,
+      restartRecognition,
+      scheduleInactivityTimeout,
+      stopSpeech,
+      voicePreference,
+    ],
   );
 
   const processMessage = useCallback(
@@ -283,10 +313,20 @@ export function useVoiceAgent({
       lastActivityAtRef.current = Date.now();
       setError("");
       setStatus("Thinking");
+
+      const history = messagesRef.current.map((item) => ({
+        role:
+          item.speaker === "Customer"
+            ? ("user" as const)
+            : ("assistant" as const),
+        content: item.text,
+      }));
+
       addMessage("Customer", message);
 
       try {
-        const result = await sendChatMessage(message, language);
+        const result = await sendChatMessage(message, language, history);
+
         if (sessionId !== sessionIdRef.current || !activeRef.current) return;
         const reply = cleanSpeechText(result.reply);
         addMessage("Aria", reply);
@@ -299,7 +339,8 @@ export function useVoiceAgent({
             : "The support service is temporarily unavailable.";
         setError(errorMessage);
         busyRef.current = false;
-        const fallback = language === "hinglish"
+        const fallback =
+          language === "hinglish"
             ? "Sorry, main abhi aapki request process nahi kar paayi. Please dobara try karein."
             : "I'm sorry, I couldn't process that request just now. Please try asking again.";
         addMessage("Aria", fallback);
@@ -355,7 +396,11 @@ export function useVoiceAgent({
         clearInactivityTimer();
       }
 
-      if (speakingRef.current && interim && interim !== lastInterimRef.current) {
+      if (
+        speakingRef.current &&
+        interim &&
+        interim !== lastInterimRef.current
+      ) {
         lastInterimRef.current = interim;
         stopSpeech();
         busyRef.current = false;
@@ -383,8 +428,13 @@ export function useVoiceAgent({
       recognitionStartingRef.current = false;
       if (!activeRef.current || sessionId !== sessionIdRef.current) return;
 
-      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-        setError("Microphone access was denied. Allow microphone access in your browser settings.");
+      if (
+        event.error === "not-allowed" ||
+        event.error === "service-not-allowed"
+      ) {
+        setError(
+          "Microphone access was denied. Allow microphone access in your browser settings.",
+        );
         activeRef.current = false;
         busyRef.current = false;
         speakingRef.current = false;
@@ -399,7 +449,8 @@ export function useVoiceAgent({
 
     recognition.onend = () => {
       recognitionStartingRef.current = false;
-      if (activeRef.current && sessionId === sessionIdRef.current) restartRecognition();
+      if (activeRef.current && sessionId === sessionIdRef.current)
+        restartRecognition();
     };
 
     recognitionRef.current = recognition;
