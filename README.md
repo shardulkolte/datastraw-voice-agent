@@ -337,8 +337,6 @@ I would first improve the voice experience because it is the main part of this a
 
 ### 4. What would need to change for 1,000 customer conversations a day?
 
-### 4. What would need to change for 1,000 customer conversations a day?
-
 For 1,000 conversations a day, I would first make sure the backend can handle multiple customers at the same time without slowing down or failing. Then I would move the order data from SQLite to a managed database that can handle more requests reliably. And also improve the AI request handling by adding timeouts, retries, and proper fallback handling if a provider fails. To avoid overloading the application, I would add rate limits and monitor response times, errors, and database performance. Finally, I would test the application with many requests at once to find and fix performance issues before handling real customer traffic.
 
 ## Demo Video and Submission
