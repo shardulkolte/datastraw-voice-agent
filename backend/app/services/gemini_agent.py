@@ -1,15 +1,16 @@
 
 import os
+import re
+import time
+import logging
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+from backend.app.services.local_assistant import route_local
 from backend.app.database import SessionLocal
-from backend.app.models import OrderRecord
-from backend.app.tools.orders import (
-    get_order_details as lookup_order,
-)
+from backend.app.tools.orders import get_order_details as lookup_order
 from backend.app.services.policies import (
     get_shipping_policy as shipping_policy,
     check_return_policy,
@@ -18,10 +19,10 @@ from backend.app.services.policies import (
     check_cod_policy,
 )
 
-
 load_dotenv()
 
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+logger = logging.getLogger(__name__)
 
 SYSTEM_INSTRUCTION = """
 You are Aria, a friendly and professional customer support
@@ -59,7 +60,6 @@ clarification. Do not guess the fee.
 
 def get_order_details(order_id: str) -> dict:
     """Look up an order using its ID in the SQLite database."""
-
     db = SessionLocal()
 
     try:
@@ -88,8 +88,7 @@ def get_order_details(order_id: str) -> dict:
 
 
 def check_order_cancellation(order_id: str) -> dict:
-    """Check cancellation using the order's actual database status."""
-
+    """Check cancellation using the actual database status."""
     order_data = get_order_details(order_id)
 
     if not order_data["found"]:
@@ -105,8 +104,7 @@ def check_order_cancellation(order_id: str) -> dict:
 
 
 def get_order_shipping_policy(order_id: str) -> dict:
-    """Check shipping using the order value stored in the database."""
-
+    """Check shipping using the stored order value."""
     order_data = get_order_details(order_id)
 
     if not order_data["found"]:
@@ -124,8 +122,7 @@ def get_return_eligibility(
     unused: bool,
     original_packaging: bool,
 ) -> dict:
-    """Check return eligibility against Aura's return policy."""
-
+    """Check return eligibility against Aura's policy."""
     return check_return_policy(
         days_since_delivery,
         unopened,
@@ -139,7 +136,6 @@ def get_damage_eligibility(
     photos_provided: bool,
 ) -> dict:
     """Check damage reporting time and photo requirements."""
-
     return check_damage_policy(
         hours_since_delivery,
         photos_provided,
@@ -148,13 +144,56 @@ def get_damage_eligibility(
 
 def get_cod_eligibility(order_value: int) -> dict:
     """Check COD eligibility against Aura's payment limit."""
-
     return check_cod_policy(order_value)
 
 
+def handle_direct_order_lookup(message: str) -> str | None:
+    """Handle explicit order-detail requests directly from SQLite."""
+    match = re.search(
+        r"\b(?:check|track|find|show|look up|details of)"
+        r"\s+(?:my\s+)?order\s+"
+        r"([A-Za-z]{2,12}\s*-\s*\d{2,}|[A-Za-z]{2,12}\s+\d{2,})\b",
+        message,
+        re.IGNORECASE,
+    )
+
+    if not match:
+        return None
+
+    order_id = re.sub(r"\s+", "", match.group(1)).upper()
+
+    if "-" in order_id:
+        prefix, number = order_id.split("-", 1)
+    else:
+        prefix, number = order_id.split(None, 1)
+
+    order_id = f"{prefix}-{number}"
+    order_data = get_order_details(order_id)
+
+    if not order_data["found"]:
+        return (
+            f"I couldn't find an order with ID {order_id}. "
+            "Please check the order ID and try again."
+        )
+
+    return (
+        f"Here are the details for order {order_data['order_id']}. "
+        f"Customer: {order_data['customer']}. "
+        f"Product: {order_data['product']}. "
+        f"Order total: ₹{order_data['value']}. "
+        f"Status: {order_data['status']}. "
+        f"Courier: {order_data['courier']}. "
+        f"Tracking ID: {order_data['tracking_id']}. "
+        f"{order_data['notes']}"
+    )
+
 
 def ask_gemini(message: str) -> str:
-    """Send a customer message to Gemini with available tools."""
+    """Handle local workflows first, then use Gemini with fast failure."""
+    local_reply = route_local(message)
+
+    if local_reply is not None:
+        return local_reply
 
     api_key = os.getenv("GEMINI_API_KEY")
 
@@ -181,12 +220,70 @@ def ask_gemini(message: str) -> str:
         ),
     )
 
-    response = chat.send_message(message)
+    # At most two attempts for temporary server/network failures.
+    # Quota/rate-limit errors immediately propagate to main.py,
+    # which should invoke the existing OpenRouter fallback.
+    for attempt in range(2):
+        try:
+            response = chat.send_message(message)
 
-    if not response.text:
-        return (
-            "I'm sorry, I couldn't prepare a response just now. "
-            "Could you please try again?"
-        )
+            if response.text:
+                return response.text
 
-    return response.text
+            return (
+                "I'm sorry, I couldn't prepare a response just now. "
+                "Could you please try again?"
+            )
+
+        except Exception as exc:
+            error_text = str(exc).lower()
+
+            quota_markers = (
+                "resource_exhausted",
+                "quota exceeded",
+                "quota_exceeded",
+                "rate limit",
+                "too many requests",
+                "429",
+            )
+
+            is_quota_error = any(
+                marker in error_text for marker in quota_markers
+            )
+
+            if is_quota_error:
+                logger.warning(
+                    "Gemini quota/rate limit reached. "
+                    "Switching to the configured fallback."
+                )
+                raise
+
+            temporary_markers = (
+                "503",
+                "service unavailable",
+                "temporarily unavailable",
+                "500",
+                "internal server error",
+                "deadline_exceeded",
+                "timeout",
+                "connection reset",
+            )
+
+            is_temporary = any(
+                marker in error_text for marker in temporary_markers
+            )
+
+            # Retry only once for recognized temporary failures.
+            if is_temporary and attempt == 0:
+                logger.warning(
+                    "Temporary Gemini failure. Retrying once in 1 second."
+                )
+                time.sleep(1)
+                continue
+
+            logger.exception(
+                "Gemini request failed; handing control to fallback."
+            )
+            raise
+
+    raise RuntimeError("Gemini failed after its retry.")
